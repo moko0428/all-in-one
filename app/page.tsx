@@ -16,10 +16,74 @@ export default function Home() {
     createdAt: string;
   };
 
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+
   const [cumulativeQuantities, setCumulativeQuantities] = useState<number[]>(
-    () => DATA.map(() => 0)
+    () => {
+      if (typeof window === 'undefined') return DATA.map(() => 0);
+      try {
+        const raw = window.localStorage.getItem('todaySalesSummary');
+        if (!raw) return DATA.map(() => 0);
+        const parsed: { quantities?: number[] } = JSON.parse(raw);
+        if (
+          !parsed.quantities ||
+          !Array.isArray(parsed.quantities) ||
+          parsed.quantities.length !== DATA.length
+        ) {
+          return DATA.map(() => 0);
+        }
+        return parsed.quantities;
+      } catch {
+        return DATA.map(() => 0);
+      }
+    }
   );
+
+  const [snapshots, setSnapshots] = useState<Snapshot[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem('todaySalesSummary');
+      if (!raw) return [];
+      const parsed: {
+        quantities?: number[];
+        updatedAt?: string;
+      } = JSON.parse(raw);
+
+      if (
+        !parsed.quantities ||
+        !Array.isArray(parsed.quantities) ||
+        parsed.quantities.length !== DATA.length
+      ) {
+        return [];
+      }
+
+      const safeQuantities = parsed.quantities;
+      const restoredTotalQuantity = safeQuantities.reduce(
+        (sum, q) => sum + q,
+        0
+      );
+      const restoredTotalPrice = safeQuantities.reduce(
+        (sum, q, index) => sum + q * DATA[index].price,
+        0
+      );
+
+      return [
+        {
+          id: parsed.updatedAt
+            ? Date.parse(parsed.updatedAt) || Date.now()
+            : Date.now(),
+          totalQuantity: restoredTotalQuantity,
+          totalPrice: restoredTotalPrice,
+          quantities: safeQuantities,
+          createdAt: parsed.updatedAt
+            ? new Date(parsed.updatedAt).toLocaleTimeString()
+            : '',
+        },
+      ];
+    } catch {
+      return [];
+    }
+  });
 
   const handleQuantityChange = (index: number, nextValue: number) => {
     const value = Math.max(
@@ -34,6 +98,17 @@ export default function Home() {
     (sum, q, index) => sum + q * DATA[index].price,
     0
   );
+
+  const handleReset = () => {
+    // 화면의 현재 입력값, 누적 데이터, 요약 카드 모두 초기화
+    setQuantities(() => DATA.map(() => 0));
+    setCumulativeQuantities(() => DATA.map(() => 0));
+    setSnapshots([]);
+
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem('todaySalesSummary');
+    }
+  };
 
   const handleConfirm = () => {
     if (totalQuantity === 0) return;
@@ -62,6 +137,18 @@ export default function Home() {
 
     setSnapshots((prev) => [snapshot, ...prev]);
     setCumulativeQuantities(nextCumulative);
+
+    // 로컬스토리지에 누적 금액 및 상품 수량 저장
+    if (typeof window !== 'undefined') {
+      const payload = {
+        totalQuantity: cumulativeTotalQuantity,
+        totalPrice: cumulativeTotalPrice,
+        quantities: nextCumulative,
+        updatedAt: now.toISOString(),
+      };
+
+      window.localStorage.setItem('todaySalesSummary', JSON.stringify(payload));
+    }
 
     // 확인 후 현재 입력값 초기화
     setQuantities(() => DATA.map(() => 0));
@@ -125,7 +212,14 @@ export default function Home() {
         <div className="text-right">{totalPrice.toLocaleString()}원</div>
       </div>
 
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <button
+          type="button"
+          onClick={() => setIsResetModalOpen(true)}
+          className="mt-2 px-4 py-2 rounded border text-sm md:text-base"
+        >
+          초기화
+        </button>
         <button
           type="button"
           onClick={handleConfirm}
@@ -135,6 +229,37 @@ export default function Home() {
           확인
         </button>
       </div>
+
+      {isResetModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-lg shadow-lg p-6 w-full max-w-sm space-y-4">
+            <p className="text-sm md:text-base">
+              정말로 초기화 하시겠습니까?
+              <br />
+              (누적된 금액과 수량이 모두 삭제됩니다)
+            </p>
+            <div className="flex justify-end gap-2 text-sm md:text-base">
+              <button
+                type="button"
+                className="px-4 py-2 rounded border"
+                onClick={() => setIsResetModalOpen(false)}
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                className="px-4 py-2 rounded bg-red-600 text-white"
+                onClick={() => {
+                  handleReset();
+                  setIsResetModalOpen(false);
+                }}
+              >
+                초기화
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {snapshots.length > 0 && (
         <div className="mt-6 border-t pt-4 space-y-3">
