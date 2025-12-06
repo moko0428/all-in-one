@@ -17,6 +17,9 @@ export default function Home() {
   };
 
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [editingSnapshotId, setEditingSnapshotId] = useState<number | null>(
+    null
+  );
 
   const [cumulativeQuantities, setCumulativeQuantities] = useState<number[]>(
     () => {
@@ -111,6 +114,7 @@ export default function Home() {
     setQuantities(() => DATA.map(() => 0));
     setCumulativeQuantities(() => DATA.map(() => 0));
     setSnapshots([]);
+    setEditingSnapshotId(null);
 
     if (typeof window !== 'undefined') {
       window.localStorage.removeItem('todaySalesSummary');
@@ -178,6 +182,89 @@ export default function Home() {
     setSnapshots(nextSnapshots);
     setCumulativeQuantities(nextCumulative);
 
+    if (editingSnapshotId === id) {
+      setEditingSnapshotId(null);
+      setQuantities(() => DATA.map(() => 0));
+    }
+
+    if (typeof window !== 'undefined') {
+      const cumulativeTotalQuantity = nextCumulative.reduce(
+        (sum, q) => sum + q,
+        0
+      );
+      const cumulativeTotalPrice = nextCumulative.reduce(
+        (sum, q, index) => sum + q * DATA[index].price,
+        0
+      );
+
+      const payload = {
+        totalQuantity: cumulativeTotalQuantity,
+        totalPrice: cumulativeTotalPrice,
+        quantities: nextCumulative,
+        updatedAt: new Date().toISOString(),
+        snapshots: nextSnapshots,
+      };
+
+      window.localStorage.setItem('todaySalesSummary', JSON.stringify(payload));
+    }
+  };
+
+  const handleSelectSnapshot = (id: number) => {
+    // 이미 선택된 항목을 다시 누르면 선택 해제
+    if (editingSnapshotId === id) {
+      setEditingSnapshotId(null);
+      setQuantities(() => DATA.map(() => 0));
+      return;
+    }
+
+    const target = snapshots.find((snap) => snap.id === id);
+    if (!target) return;
+
+    setQuantities([...target.quantities]);
+    setEditingSnapshotId(id);
+  };
+
+  const handleUpdateSnapshot = () => {
+    if (editingSnapshotId === null) return;
+
+    const targetIndex = snapshots.findIndex(
+      (snap) => snap.id === editingSnapshotId
+    );
+    if (targetIndex === -1) return;
+
+    const oldSnapshot = snapshots[targetIndex];
+
+    const nextQuantities = [...quantities];
+    const nextTotalQuantity = nextQuantities.reduce((sum, q) => sum + q, 0);
+    const nextTotalPrice = nextQuantities.reduce(
+      (sum, q, index) => sum + q * DATA[index].price,
+      0
+    );
+
+    // 누적값은 (새 수량 - 기존 수량) 만큼 반영
+    const nextCumulative = cumulativeQuantities.map((value, index) => {
+      const diff =
+        (nextQuantities[index] ?? 0) - (oldSnapshot.quantities[index] ?? 0);
+      return value + diff;
+    });
+
+    const updatedSnapshot: Snapshot = {
+      ...oldSnapshot,
+      totalQuantity: nextTotalQuantity,
+      totalPrice: nextTotalPrice,
+      quantities: nextQuantities,
+      createdAt: new Date().toLocaleTimeString(),
+    };
+
+    const nextSnapshots = snapshots.map((snap) =>
+      snap.id === editingSnapshotId ? updatedSnapshot : snap
+    );
+
+    setSnapshots(nextSnapshots);
+    setCumulativeQuantities(nextCumulative);
+    setEditingSnapshotId(null);
+    setQuantities(() => DATA.map(() => 0));
+
     if (typeof window !== 'undefined') {
       const cumulativeTotalQuantity = nextCumulative.reduce(
         (sum, q) => sum + q,
@@ -232,7 +319,15 @@ export default function Home() {
                 key={item.name}
                 className="grid grid-cols-4 items-center py-2 border-b last:border-b-0 text-sm md:text-base gap-2"
               >
-                <div>{item.name}</div>
+                <div
+                  className={
+                    quantity > 0
+                      ? 'bg-red-500 text-white rounded px-2 py-0.5'
+                      : ''
+                  }
+                >
+                  {item.name}
+                </div>
                 <div className="text-right">
                   {item.price.toLocaleString()}원
                 </div>
@@ -274,14 +369,18 @@ export default function Home() {
             <div className="text-right">{totalPrice.toLocaleString()}원</div>
           </div>
 
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
             <button
               type="button"
-              onClick={handleConfirm}
+              onClick={
+                editingSnapshotId === null
+                  ? handleConfirm
+                  : handleUpdateSnapshot
+              }
               className="mt-2 px-4 py-2 rounded bg-blue-600 text-white text-sm md:text-base disabled:opacity-40"
               disabled={totalQuantity === 0}
             >
-              확인
+              {editingSnapshotId === null ? '입력' : '수정하기'}
             </button>
           </div>
         </div>
@@ -297,7 +396,12 @@ export default function Home() {
                 {snapshots.map((snap, index) => (
                   <div
                     key={snap.id}
-                    className="border rounded-md p-3 bg-white space-y-1 text-xs md:text-sm"
+                    className={`border rounded-md p-3 bg-white space-y-1 text-xs md:text-sm cursor-pointer ${
+                      editingSnapshotId === snap.id
+                        ? 'border-blue-500 ring-1 ring-blue-300'
+                        : ''
+                    }`}
+                    onClick={() => handleSelectSnapshot(snap.id)}
                   >
                     <div className="flex justify-between items-center gap-2">
                       <span className="truncate">
@@ -308,7 +412,10 @@ export default function Home() {
                         <button
                           type="button"
                           className="px-2 py-0.5 border rounded text-[11px] text-red-600 hover:bg-red-50"
-                          onClick={() => handleDeleteSnapshot(snap.id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteSnapshot(snap.id);
+                          }}
                         >
                           삭제
                         </button>
