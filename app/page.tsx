@@ -209,6 +209,9 @@ export default function Home() {
     }
   };
 
+  const handleFullSet = () => {
+    setQuantities((prev) => prev.map((q) => q + 1));
+  };
   const handleSelectSnapshot = (id: number) => {
     // 이미 선택된 항목을 다시 누르면 선택 해제
     if (editingSnapshotId === id) {
@@ -370,6 +373,13 @@ export default function Home() {
           </div>
 
           <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleFullSet}
+              className="mt-2 px-3 py-2 rounded border text-xs md:text-sm"
+            >
+              풀세트
+            </button>
             <button
               type="button"
               onClick={
