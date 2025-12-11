@@ -1,20 +1,37 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { DATA } from '@/data/data';
 
+type Item = {
+  name: string;
+  price: number;
+};
+
+type Snapshot = {
+  id: number;
+  totalQuantity: number;
+  totalPrice: number;
+  quantities: number[];
+  createdAt: string;
+};
+
 export default function Home() {
+  const isValidItems = (value: unknown): value is Item[] =>
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        item &&
+        typeof item === 'object' &&
+        typeof (item as Item).name === 'string' &&
+        typeof (item as Item).price === 'number'
+    );
+
+  const [items, setItems] = useState<Item[]>(() => DATA);
+
   const [quantities, setQuantities] = useState<number[]>(() =>
     DATA.map(() => 0)
   );
-
-  type Snapshot = {
-    id: number;
-    totalQuantity: number;
-    totalPrice: number;
-    quantities: number[];
-    createdAt: string;
-  };
 
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [editingSnapshotId, setEditingSnapshotId] = useState<number | null>(
@@ -22,78 +39,80 @@ export default function Home() {
   );
 
   const [cumulativeQuantities, setCumulativeQuantities] = useState<number[]>(
-    () => {
-      if (typeof window === 'undefined') return DATA.map(() => 0);
-      try {
-        const raw = window.localStorage.getItem('todaySalesSummary');
-        if (!raw) return DATA.map(() => 0);
-        const parsed: { quantities?: number[] } = JSON.parse(raw);
-        if (
-          !parsed.quantities ||
-          !Array.isArray(parsed.quantities) ||
-          parsed.quantities.length !== DATA.length
-        ) {
-          return DATA.map(() => 0);
-        }
-        return parsed.quantities;
-      } catch {
-        return DATA.map(() => 0);
-      }
-    }
+    () => DATA.map(() => 0)
   );
 
-  const [snapshots, setSnapshots] = useState<Snapshot[]>(() => {
-    if (typeof window === 'undefined') return [];
+  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+
+  const [isSettingMode, setIsSettingMode] = useState(false);
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemPrice, setNewItemPrice] = useState('');
+  const [addError, setAddError] = useState('');
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
     try {
       const raw = window.localStorage.getItem('todaySalesSummary');
-      if (!raw) return [];
+      if (!raw) return;
       const parsed: {
         quantities?: number[];
         updatedAt?: string;
         snapshots?: Snapshot[];
+        items?: Item[];
       } = JSON.parse(raw);
 
-      // 건별 스냅샷이 있으면 복원
-      if (parsed.snapshots && Array.isArray(parsed.snapshots)) {
-        return parsed.snapshots;
-      }
+      const savedItems = isValidItems(parsed.items) ? parsed.items : DATA;
+      const targetLength = savedItems.length;
 
-      // 스냅샷이 없으면 누적값으로 요약 카드만 생성 (하위 호환성)
+      const savedCumulative =
+        parsed.quantities &&
+        Array.isArray(parsed.quantities) &&
+        parsed.quantities.length === targetLength
+          ? parsed.quantities
+          : savedItems.map(() => 0);
+
+      const restoredSnapshots: Snapshot[] =
+        parsed.snapshots && Array.isArray(parsed.snapshots)
+          ? parsed.snapshots.map((snap) => ({
+              ...snap,
+              quantities: savedItems.map((_, idx) => snap.quantities[idx] ?? 0),
+            }))
+          : [];
+
+      // 하위 호환: 스냅샷이 없고 누적만 있는 경우 요약 카드 1개 생성
       if (
-        !parsed.quantities ||
-        !Array.isArray(parsed.quantities) ||
-        parsed.quantities.length !== DATA.length
+        restoredSnapshots.length === 0 &&
+        savedCumulative.some((q) => q > 0)
       ) {
-        return [];
-      }
-
-      const safeQuantities = parsed.quantities;
-      const restoredTotalQuantity = safeQuantities.reduce(
-        (sum, q) => sum + q,
-        0
-      );
-      const restoredTotalPrice = safeQuantities.reduce(
-        (sum, q, index) => sum + q * DATA[index].price,
-        0
-      );
-
-      return [
-        {
+        const restoredTotalQuantity = savedCumulative.reduce(
+          (sum, q) => sum + q,
+          0
+        );
+        const restoredTotalPrice = savedCumulative.reduce(
+          (sum, q, index) => sum + q * (savedItems[index]?.price ?? 0),
+          0
+        );
+        restoredSnapshots.push({
           id: parsed.updatedAt
             ? Date.parse(parsed.updatedAt) || Date.now()
             : Date.now(),
           totalQuantity: restoredTotalQuantity,
           totalPrice: restoredTotalPrice,
-          quantities: safeQuantities,
+          quantities: savedItems.map((_, idx) => savedCumulative[idx] ?? 0),
           createdAt: parsed.updatedAt
             ? new Date(parsed.updatedAt).toLocaleTimeString()
             : '',
-        },
-      ];
+        });
+      }
+
+      setItems(savedItems);
+      setCumulativeQuantities(savedCumulative);
+      setSnapshots(restoredSnapshots);
+      setQuantities(savedItems.map(() => 0));
     } catch {
-      return [];
+      // ignore malformed storage
     }
-  });
+  }, []);
 
   const handleQuantityChange = (index: number, nextValue: number) => {
     const value = Math.max(
@@ -103,22 +122,143 @@ export default function Home() {
     setQuantities((prev) => prev.map((q, i) => (i === index ? value : q)));
   };
 
+  const persistState = (
+    itemsList: Item[],
+    cumulativeList: number[],
+    snapshotsList: Snapshot[],
+    timestamp = new Date()
+  ) => {
+    if (typeof window === 'undefined') return;
+
+    const cumulativeTotalQuantity = cumulativeList.reduce(
+      (sum, q) => sum + q,
+      0
+    );
+    const cumulativeTotalPrice = cumulativeList.reduce(
+      (sum, q, index) => sum + q * (itemsList[index]?.price ?? 0),
+      0
+    );
+
+    const payload = {
+      totalQuantity: cumulativeTotalQuantity,
+      totalPrice: cumulativeTotalPrice,
+      quantities: cumulativeList,
+      updatedAt: timestamp.toISOString(),
+      snapshots: snapshotsList,
+      items: itemsList,
+    };
+
+    window.localStorage.setItem('todaySalesSummary', JSON.stringify(payload));
+  };
+
+  const handleAddItem = () => {
+    const name = newItemName.trim();
+    const parsedPrice = Math.floor(Number(newItemPrice));
+    const price = Number.isNaN(parsedPrice) ? 0 : parsedPrice;
+
+    if (!name || price <= 0) {
+      setAddError('상품명과 0원 초과 가격을 입력해주세요.');
+      return;
+    }
+
+    if (items.some((item) => item.name === name)) {
+      setAddError('이미 동일한 상품명이 있습니다.');
+      return;
+    }
+
+    const nextItems = [...items, { name, price }];
+    const nextQuantities = [...quantities, 0];
+    const nextCumulative = [...cumulativeQuantities, 0];
+    const nextSnapshots = snapshots.map((snap) => ({
+      ...snap,
+      quantities: [...snap.quantities, 0],
+    }));
+
+    setItems(nextItems);
+    setQuantities(nextQuantities);
+    setCumulativeQuantities(nextCumulative);
+    setSnapshots(nextSnapshots);
+    setNewItemName('');
+    setNewItemPrice('');
+    setAddError('');
+
+    persistState(nextItems, nextCumulative, nextSnapshots);
+  };
+
+  const recalcSnapshots = (itemsList: Item[], snapshotsList: Snapshot[]) =>
+    snapshotsList.map((snap) => {
+      const totalQuantity = snap.quantities.reduce((sum, q) => sum + q, 0);
+      const totalPrice = snap.quantities.reduce(
+        (sum, q, i) => sum + q * (itemsList[i]?.price ?? 0),
+        0
+      );
+      return { ...snap, totalQuantity, totalPrice };
+    });
+
+  const handleDeleteItem = (index: number) => {
+    if (!items[index]) return;
+
+    const nextItems = items.filter((_, i) => i !== index);
+    const nextQuantities = quantities.filter((_, i) => i !== index);
+    const nextCumulative = cumulativeQuantities.filter((_, i) => i !== index);
+    const nextSnapshots = recalcSnapshots(
+      nextItems,
+      snapshots.map((snap) => ({
+        ...snap,
+        quantities: snap.quantities.filter((_, i) => i !== index),
+      }))
+    );
+
+    setItems(nextItems);
+    setQuantities(nextQuantities);
+    setCumulativeQuantities(nextCumulative);
+    setSnapshots(nextSnapshots);
+    setEditingSnapshotId(null);
+    setAddError('');
+
+    persistState(nextItems, nextCumulative, nextSnapshots);
+  };
+
+  const handleChangeItemName = (index: number, nextName: string) => {
+    const name = nextName.trim();
+    if (!name) return;
+    const nextItems = items.map((item, i) =>
+      i === index ? { ...item, name } : item
+    );
+    const nextSnapshots = recalcSnapshots(nextItems, snapshots);
+    setItems(nextItems);
+    setSnapshots(nextSnapshots);
+    persistState(nextItems, cumulativeQuantities, nextSnapshots);
+  };
+
+  const handleChangeItemPrice = (index: number, nextPrice: string) => {
+    const parsed = Math.floor(Number(nextPrice));
+    if (Number.isNaN(parsed) || parsed <= 0) return;
+    const nextItems = items.map((item, i) =>
+      i === index ? { ...item, price: parsed } : item
+    );
+    const nextSnapshots = recalcSnapshots(nextItems, snapshots);
+    setItems(nextItems);
+    setSnapshots(nextSnapshots);
+    persistState(nextItems, cumulativeQuantities, nextSnapshots);
+  };
+
   const totalQuantity = quantities.reduce((sum, q) => sum + q, 0);
   const totalPrice = quantities.reduce(
-    (sum, q, index) => sum + q * DATA[index].price,
+    (sum, q, index) => sum + q * (items[index]?.price ?? 0),
     0
   );
 
   const handleReset = () => {
-    // 화면의 현재 입력값, 누적 데이터, 요약 카드 모두 초기화
-    setQuantities(() => DATA.map(() => 0));
-    setCumulativeQuantities(() => DATA.map(() => 0));
+    // 건별 스냅샷과 오늘 판매 요약(누적)만 초기화, 상품 목록은 유지
+    const zeroed = items.map(() => 0);
+    setQuantities(zeroed);
+    setCumulativeQuantities(zeroed);
     setSnapshots([]);
     setEditingSnapshotId(null);
+    setIsSettingMode(false);
 
-    if (typeof window !== 'undefined') {
-      window.localStorage.removeItem('todaySalesSummary');
-    }
+    persistState(items, zeroed, [], new Date());
   };
 
   const handleConfirm = () => {
@@ -127,15 +267,6 @@ export default function Home() {
     const now = new Date();
     const nextCumulative = cumulativeQuantities.map(
       (prev, index) => prev + (quantities[index] ?? 0)
-    );
-
-    const cumulativeTotalQuantity = nextCumulative.reduce(
-      (sum, q) => sum + q,
-      0
-    );
-    const cumulativeTotalPrice = nextCumulative.reduce(
-      (sum, q, index) => sum + q * DATA[index].price,
-      0
     );
 
     // 건별 스냅샷은 해당 시점의 입력값만 저장 (누적 아님)
@@ -153,20 +284,10 @@ export default function Home() {
     setCumulativeQuantities(nextCumulative);
 
     // 로컬스토리지에 누적 금액 및 상품 수량, 건별 스냅샷 저장
-    if (typeof window !== 'undefined') {
-      const payload = {
-        totalQuantity: cumulativeTotalQuantity,
-        totalPrice: cumulativeTotalPrice,
-        quantities: nextCumulative,
-        updatedAt: now.toISOString(),
-        snapshots: nextSnapshots, // 건별 스냅샷도 함께 저장
-      };
-
-      window.localStorage.setItem('todaySalesSummary', JSON.stringify(payload));
-    }
+    persistState(items, nextCumulative, nextSnapshots, now);
 
     // 확인 후 현재 입력값 초기화
-    setQuantities(() => DATA.map(() => 0));
+    setQuantities(() => items.map(() => 0));
   };
 
   const handleDeleteSnapshot = (id: number) => {
@@ -184,29 +305,10 @@ export default function Home() {
 
     if (editingSnapshotId === id) {
       setEditingSnapshotId(null);
-      setQuantities(() => DATA.map(() => 0));
+      setQuantities(() => items.map(() => 0));
     }
 
-    if (typeof window !== 'undefined') {
-      const cumulativeTotalQuantity = nextCumulative.reduce(
-        (sum, q) => sum + q,
-        0
-      );
-      const cumulativeTotalPrice = nextCumulative.reduce(
-        (sum, q, index) => sum + q * DATA[index].price,
-        0
-      );
-
-      const payload = {
-        totalQuantity: cumulativeTotalQuantity,
-        totalPrice: cumulativeTotalPrice,
-        quantities: nextCumulative,
-        updatedAt: new Date().toISOString(),
-        snapshots: nextSnapshots,
-      };
-
-      window.localStorage.setItem('todaySalesSummary', JSON.stringify(payload));
-    }
+    persistState(items, nextCumulative, nextSnapshots);
   };
 
   const handleFullSet = () => {
@@ -216,7 +318,7 @@ export default function Home() {
     // 이미 선택된 항목을 다시 누르면 선택 해제
     if (editingSnapshotId === id) {
       setEditingSnapshotId(null);
-      setQuantities(() => DATA.map(() => 0));
+      setQuantities(() => items.map(() => 0));
       return;
     }
 
@@ -240,7 +342,7 @@ export default function Home() {
     const nextQuantities = [...quantities];
     const nextTotalQuantity = nextQuantities.reduce((sum, q) => sum + q, 0);
     const nextTotalPrice = nextQuantities.reduce(
-      (sum, q, index) => sum + q * DATA[index].price,
+      (sum, q, index) => sum + q * (items[index]?.price ?? 0),
       0
     );
 
@@ -266,34 +368,33 @@ export default function Home() {
     setSnapshots(nextSnapshots);
     setCumulativeQuantities(nextCumulative);
     setEditingSnapshotId(null);
-    setQuantities(() => DATA.map(() => 0));
+    setQuantities(() => items.map(() => 0));
 
-    if (typeof window !== 'undefined') {
-      const cumulativeTotalQuantity = nextCumulative.reduce(
-        (sum, q) => sum + q,
-        0
-      );
-      const cumulativeTotalPrice = nextCumulative.reduce(
-        (sum, q, index) => sum + q * DATA[index].price,
-        0
-      );
-
-      const payload = {
-        totalQuantity: cumulativeTotalQuantity,
-        totalPrice: cumulativeTotalPrice,
-        quantities: nextCumulative,
-        updatedAt: new Date().toISOString(),
-        snapshots: nextSnapshots,
-      };
-
-      window.localStorage.setItem('todaySalesSummary', JSON.stringify(payload));
-    }
+    persistState(items, nextCumulative, nextSnapshots);
   };
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-1 space-y-4">
       <div className="flex items-center justify-between mb-2">
         <h1 className="text-2xl font-bold">굿즈 수량 입력</h1>
+        <button
+          type="button"
+          onClick={() =>
+            setIsSettingMode((prev) => {
+              const next = !prev;
+              if (next) {
+                setEditingSnapshotId(null);
+                setQuantities(items.map(() => 0));
+              }
+              return next;
+            })
+          }
+          className={`px-4 py-2 rounded border text-sm md:text-base ${
+            isSettingMode ? 'bg-blue-50 border-blue-400 text-blue-700' : ''
+          }`}
+        >
+          세팅 모드 {isSettingMode ? 'ON' : 'OFF'}
+        </button>
         <button
           type="button"
           onClick={() => setIsResetModalOpen(true)}
@@ -303,96 +404,202 @@ export default function Home() {
         </button>
       </div>
 
+      {isSettingMode ? (
+        <div className="bg-white shadow-md p-4 rounded-md border space-y-2">
+          <h2 className="text-sm font-semibold">상품 추가</h2>
+          <div className="grid grid-cols-1 md:grid-cols-6 gap-2">
+            <input
+              type="text"
+              className="md:col-span-3 border rounded px-3 py-2 text-sm md:text-base"
+              placeholder="예) 신규 굿즈 이름"
+              value={newItemName}
+              onChange={(e) => setNewItemName(e.target.value)}
+            />
+            <input
+              type="number"
+              min={1}
+              className="md:col-span-2 border rounded px-3 py-2 text-sm md:text-base"
+              placeholder="가격 (원)"
+              value={newItemPrice}
+              onChange={(e) => setNewItemPrice(e.target.value)}
+            />
+            <button
+              type="button"
+              onClick={handleAddItem}
+              className="md:col-span-1 w-full px-3 py-2 rounded bg-green-600 text-white text-sm md:text-base disabled:opacity-40"
+            >
+              상품 추가
+            </button>
+          </div>
+          {addError ? (
+            <p className="text-sm text-red-600">{addError}</p>
+          ) : (
+            <p className="text-xs text-gray-500">
+              상품명과 가격을 입력하면 목록 하단에 추가됩니다.
+            </p>
+          )}
+        </div>
+      ) : null}
+
       <div className="grid grid-cols-3 gap-6 items-stretch">
         {/* 왼쪽: 굿즈 수량 입력 */}
         <div className="col-span-2 space-y-4 h-[600px] bg-white shadow-md p-4 rounded-md border">
-          <div className="grid grid-cols-4 font-semibold border-b pb-2 text-sm md:text-base">
-            <div>상품명</div>
-            <div className="text-right">가격</div>
-            <div className="text-center">수량</div>
-            <div className="text-right">금액</div>
-          </div>
+          {isSettingMode ? (
+            <>
+              <div className="grid grid-cols-3 font-semibold border-b pb-2 text-sm md:text-base">
+                <div>상품명</div>
+                <div className="text-right">가격</div>
+                <div className="text-center">관리</div>
+              </div>
+              {items.length === 0 ? (
+                <div className="py-6 text-center">
+                  <span className="text-sm text-gray-500">
+                    상품을 추가해주세요.
+                  </span>
+                </div>
+              ) : (
+                items.map((item, index) => (
+                  <div
+                    key={item.name + index}
+                    className="grid grid-cols-3 items-center py-2 border-b last:border-b-0 text-sm md:text-base gap-2"
+                  >
+                    <input
+                      type="text"
+                      className="border rounded px-2 py-1"
+                      value={item.name}
+                      onChange={(e) =>
+                        handleChangeItemName(index, e.target.value)
+                      }
+                    />
+                    <input
+                      type="number"
+                      min={1}
+                      className="border rounded px-2 py-1 text-right"
+                      value={item.price}
+                      onChange={(e) =>
+                        handleChangeItemPrice(index, e.target.value)
+                      }
+                    />
+                    <div className="flex justify-center">
+                      <button
+                        type="button"
+                        className="px-2 py-1 border rounded text-[11px] text-red-600 hover:bg-red-50"
+                        onClick={() => handleDeleteItem(index)}
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </>
+          ) : (
+            <>
+              <div className="grid grid-cols-4 font-semibold border-b pb-2 text-sm md:text-base">
+                <div>상품명</div>
+                <div className="text-right">가격</div>
+                <div className="text-center">수량</div>
+                <div className="text-right">금액</div>
+              </div>
 
-          {DATA.map((item, index) => {
-            const quantity = quantities[index] ?? 0;
-            const lineTotal = quantity * item.price;
+              {items.length === 0 ? (
+                <div className="py-6 text-center">
+                  <span className="text-sm text-gray-500">
+                    상품을 추가해주세요.
+                  </span>
+                </div>
+              ) : (
+                items.map((item, index) => {
+                  const quantity = quantities[index] ?? 0;
+                  const lineTotal = quantity * item.price;
 
-            return (
-              <div
-                key={item.name}
-                className="grid grid-cols-4 items-center py-2 border-b last:border-b-0 text-sm md:text-base gap-2"
-              >
-                <div
-                  className={
-                    quantity > 0
-                      ? 'bg-red-500 text-white rounded px-2 py-0.5'
-                      : ''
-                  }
-                >
-                  {item.name}
+                  return (
+                    <div
+                      key={item.name}
+                      className="grid grid-cols-4 items-center py-2 border-b last:border-b-0 text-sm md:text-base gap-2"
+                    >
+                      <div
+                        className={
+                          quantity > 0
+                            ? 'bg-red-500 text-white rounded px-2 py-0.5'
+                            : ''
+                        }
+                      >
+                        {item.name}
+                      </div>
+                      <div className="text-right">
+                        {item.price.toLocaleString()}원
+                      </div>
+                      <div className="flex items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          className="px-2 py-1 border rounded text-sm"
+                          onClick={() =>
+                            handleQuantityChange(index, quantity - 1)
+                          }
+                        >
+                          -
+                        </button>
+                        <input
+                          type="number"
+                          min={0}
+                          className="w-16 border rounded px-2 py-1 text-center"
+                          value={quantity}
+                          onChange={(e) =>
+                            handleQuantityChange(index, Number(e.target.value))
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="px-2 py-1 border rounded text-sm"
+                          onClick={() =>
+                            handleQuantityChange(index, quantity + 1)
+                          }
+                        >
+                          +
+                        </button>
+                      </div>
+                      <div className="text-right">
+                        {lineTotal.toLocaleString()}원
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+
+              <div className="grid grid-cols-4 items-center font-semibold pt-4 border-t mt-4 text-sm md:text-base gap-2">
+                <div className="col-span-2 text-right">현재 합계</div>
+                <div className="text-center">
+                  총 {totalQuantity.toLocaleString()}개
                 </div>
                 <div className="text-right">
-                  {item.price.toLocaleString()}원
+                  {totalPrice.toLocaleString()}원
                 </div>
-                <div className="flex items-center justify-center gap-2">
-                  <button
-                    type="button"
-                    className="px-2 py-1 border rounded text-sm"
-                    onClick={() => handleQuantityChange(index, quantity - 1)}
-                  >
-                    -
-                  </button>
-                  <input
-                    type="number"
-                    min={0}
-                    className="w-16 border rounded px-2 py-1 text-center"
-                    value={quantity}
-                    onChange={(e) =>
-                      handleQuantityChange(index, Number(e.target.value))
-                    }
-                  />
-                  <button
-                    type="button"
-                    className="px-2 py-1 border rounded text-sm"
-                    onClick={() => handleQuantityChange(index, quantity + 1)}
-                  >
-                    +
-                  </button>
-                </div>
-                <div className="text-right">{lineTotal.toLocaleString()}원</div>
               </div>
-            );
-          })}
 
-          <div className="grid grid-cols-4 items-center font-semibold pt-4 border-t mt-4 text-sm md:text-base gap-2">
-            <div className="col-span-2 text-right">현재 합계</div>
-            <div className="text-center">
-              총 {totalQuantity.toLocaleString()}개
-            </div>
-            <div className="text-right">{totalPrice.toLocaleString()}원</div>
-          </div>
-
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              onClick={handleFullSet}
-              className="mt-2 px-3 py-2 rounded border text-xs md:text-sm"
-            >
-              풀세트
-            </button>
-            <button
-              type="button"
-              onClick={
-                editingSnapshotId === null
-                  ? handleConfirm
-                  : handleUpdateSnapshot
-              }
-              className="mt-2 px-4 py-2 rounded bg-blue-600 text-white text-sm md:text-base disabled:opacity-40"
-              disabled={totalQuantity === 0}
-            >
-              {editingSnapshotId === null ? '입력' : '수정하기'}
-            </button>
-          </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={handleFullSet}
+                  className="mt-2 px-3 py-2 rounded border text-xs md:text-sm"
+                >
+                  풀세트
+                </button>
+                <button
+                  type="button"
+                  onClick={
+                    editingSnapshotId === null
+                      ? handleConfirm
+                      : handleUpdateSnapshot
+                  }
+                  className="mt-2 px-4 py-2 rounded bg-blue-600 text-white text-sm md:text-base disabled:opacity-40"
+                  disabled={totalQuantity === 0}
+                >
+                  {editingSnapshotId === null ? '입력' : '수정하기'}
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
         {/* 오른쪽: 건별 스냅샷 */}
@@ -432,16 +639,18 @@ export default function Home() {
                       </div>
                     </div>
                     <div className="flex flex-wrap gap-1 mt-1">
-                      {snap.quantities.map((q, i) =>
-                        q > 0 ? (
+                      {snap.quantities.map((q, i) => {
+                        const item = items[i];
+                        if (!item || q <= 0) return null;
+                        return (
                           <span
-                            key={`${snap.id}-item-${DATA[i].name}`}
+                            key={`${snap.id}-item-${item.name}`}
                             className="inline-flex items-center px-2 py-0.5 rounded-full bg-gray-50 border"
                           >
-                            {DATA[i].name} × {q}
+                            {item.name} × {q}
                           </span>
-                        ) : null
-                      )}
+                        );
+                      })}
                     </div>
                   </div>
                 ))}
@@ -498,7 +707,7 @@ export default function Home() {
                 0
               );
               const cumulativeTotalPrice = cumulativeQuantities.reduce(
-                (sum, q, index) => sum + q * DATA[index].price,
+                (sum, q, index) => sum + q * (items[index]?.price ?? 0),
                 0
               );
 
@@ -512,12 +721,12 @@ export default function Home() {
                   </div>
                   <div className="flex flex-wrap gap-2 mt-1">
                     {cumulativeQuantities.map((q, i) =>
-                      q > 0 ? (
+                      q > 0 && items[i] ? (
                         <span
-                          key={`cumulative-${DATA[i].name}`}
+                          key={`cumulative-${items[i].name}`}
                           className="inline-flex items-center px-2 py-1 rounded-full bg-white border text-xs md:text-sm"
                         >
-                          {DATA[i].name} × {q}
+                          {items[i].name} × {q}
                         </span>
                       ) : null
                     )}
